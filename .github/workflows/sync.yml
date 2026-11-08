@@ -1,0 +1,33 @@
+# Copies each skill from its live site, so this repo matches what the site serves.
+# The site's own repo reviews every change; this only mirrors it.
+name: Sync skills from sites
+on:
+  schedule:
+    - cron: "41 13 * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch live skills
+        run: |
+          set -euo pipefail
+          fetch() {
+            tmp=$(mktemp)
+            curl -sfL --max-time 30 "$2" -o "$tmp"
+            # Refuse anything that isn't a skill named as expected (an error page, a redirect to HTML).
+            head -1 "$tmp" | grep -qx -- '---'
+            grep -qx "name: $1" "$tmp"
+            mv "$tmp" "skills/$1/SKILL.md"
+          }
+          fetch javascriptai https://javascriptai.com/skill.md
+      - name: Commit changes
+        run: |
+          if git diff --quiet; then echo "No changes."; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Sync skills from live sites"
+          git push
