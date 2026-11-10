@@ -20,8 +20,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The exact command on javascriptai.com (no agent named).
-          - { name: homepage-command, agent: "", expect: "" }
+          # The exact command on javascriptai.com (no agent named): the shared copy, plus Claude Code's link to it.
+          - { name: homepage-command, agent: "", expect: ".agents/skills/javascriptai/SKILL.md .claude/skills/javascriptai/SKILL.md" }
           - { name: claude-code, agent: claude-code, expect: .claude/skills/javascriptai/SKILL.md }
           - { name: cursor, agent: cursor, expect: .agents/skills/javascriptai/SKILL.md }
           - { name: codex, agent: codex, expect: .agents/skills/javascriptai/SKILL.md }
@@ -47,12 +47,14 @@ jobs:
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/proj"
-          found=$(find . "$HOME" -path '*/node_modules' -prune -o -path '*/.npm' -prune -o -path "*javascriptai/SKILL.md" -print 2>/dev/null)
+          found=$(find -L . -path '*/node_modules' -prune -o -path "*javascriptai/SKILL.md" -print 2>/dev/null)
           echo "Installed at:"; echo "$found"
-          [ -n "$found" ] || { echo "::error::No javascriptai/SKILL.md was installed"; exit 1; }
-          if [ -n "$EXPECT" ]; then [ -f "$EXPECT" ] || { echo "::error::Expected $EXPECT"; exit 1; }; fi
           curl -sfL --max-time 30 https://javascriptai.com/skill.md -o "$RUNNER_TEMP/live.md"
-          file=$(echo "$found" | head -1)
-          diff <(tr -d '\r' < "$file") <(tr -d '\r' < "$RUNNER_TEMP/live.md") || { echo "::error::Installed skill differs from javascriptai.com/skill.md"; exit 1; }
+          for file in $EXPECT; do
+            [ -f "$file" ] || { echo "::error::Expected $file"; exit 1; }
+            diff <(tr -d '\r' < "$file") <(tr -d '\r' < "$RUNNER_TEMP/live.md") || { echo "::error::$file differs from javascriptai.com/skill.md"; exit 1; }
+            echo "ok: $file matches the site"
+          done
+          file=${EXPECT%% *}
           head -5 "$file"
           { echo "### ${{ matrix.name }}"; echo; echo '```'; echo "$found"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
