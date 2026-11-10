@@ -1,0 +1,58 @@
+# Installs each skill the way the site tells people to, on a clean machine, every day.
+# Uses the latest skills CLI on purpose: that's what `npx skills` gives a new user.
+# Fails if the install errors, the skill lands somewhere an agent won't look, or the
+# installed file differs from the one the site serves.
+name: Install test
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "11 15 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The exact command on javascriptai.com (no agent named).
+          - { name: homepage-command, agent: "", expect: "" }
+          - { name: claude-code, agent: claude-code, expect: .claude/skills/javascriptai/SKILL.md }
+          - { name: cursor, agent: cursor, expect: .agents/skills/javascriptai/SKILL.md }
+          - { name: codex, agent: codex, expect: .agents/skills/javascriptai/SKILL.md }
+          - { name: github-copilot, agent: github-copilot, expect: .agents/skills/javascriptai/SKILL.md }
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install into a fresh project
+        env:
+          AGENT: ${{ matrix.agent }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj" && git init -q
+          args=(add goodmeasurelabs/skills --skill javascriptai -y)
+          [ -n "$AGENT" ] && args+=(-a "$AGENT")
+          echo "+ npx skills ${args[*]}"
+          npx -y skills@latest "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/install.log"
+      - name: Check the skill is where the agent reads it, and matches the site
+        env:
+          EXPECT: ${{ matrix.expect }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/proj"
+          found=$(find . "$HOME" -path '*/node_modules' -prune -o -path '*/.npm' -prune -o -path "*javascriptai/SKILL.md" -print 2>/dev/null)
+          echo "Installed at:"; echo "$found"
+          [ -n "$found" ] || { echo "::error::No javascriptai/SKILL.md was installed"; exit 1; }
+          if [ -n "$EXPECT" ]; then [ -f "$EXPECT" ] || { echo "::error::Expected $EXPECT"; exit 1; }; fi
+          curl -sfL --max-time 30 https://javascriptai.com/skill.md -o "$RUNNER_TEMP/live.md"
+          file=$(echo "$found" | head -1)
+          diff <(tr -d '\r' < "$file") <(tr -d '\r' < "$RUNNER_TEMP/live.md") || { echo "::error::Installed skill differs from javascriptai.com/skill.md"; exit 1; }
+          head -5 "$file"
+          { echo "### ${{ matrix.name }}"; echo; echo '```'; echo "$found"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
