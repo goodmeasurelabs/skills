@@ -1,11 +1,12 @@
 ---
 name: javascriptai
 description: >
-  Pick current, maintained JavaScript and TypeScript AI libraries. Use before adding, changing,
-  upgrading or recommending any AI package in a JS/TS project: model SDKs (OpenAI, Anthropic,
-  Gemini), the Vercel AI SDK, agent and workflow frameworks (Mastra, LangGraph, LangChain.js),
-  MCP servers and clients, RAG and vector databases, embeddings, and in-browser ML
-  (Transformers.js, TensorFlow.js, WebLLM).
+  Pick current, maintained JavaScript and TypeScript AI libraries. Use before writing or changing
+  AI code in a JS/TS project: calling a model, building an agent, chatbot, workflow or pipeline,
+  adding memory, tool calls, human approval steps, structured output, RAG or search, and before
+  adding, upgrading or recommending any AI package: model SDKs (OpenAI, Anthropic, Gemini), the
+  Vercel AI SDK, agent and workflow frameworks (Mastra, LangGraph, LangChain.js), MCP servers and
+  clients, vector databases, embeddings, and in-browser ML (Transformers.js, TensorFlow.js, WebLLM).
 ---
 
 # JavaScriptAI
