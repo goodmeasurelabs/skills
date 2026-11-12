@@ -28,16 +28,19 @@ jobs:
           - { name: github-copilot, agent: github-copilot, expect: .agents/skills/javascriptai/SKILL.md }
     name: ${{ matrix.name }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
       - name: Install into a fresh project
         env:
           AGENT: ${{ matrix.agent }}
+          # Review the proposed files on PRs; scheduled runs exercise the public install command.
+          SOURCE: ${{ github.event_name == 'pull_request' && github.workspace || 'goodmeasurelabs/skills' }}
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/proj" && cd "$RUNNER_TEMP/proj" && git init -q
-          args=(add goodmeasurelabs/skills --skill javascriptai -y)
+          args=(add "$SOURCE" --skill javascriptai -y)
           [ -n "$AGENT" ] && args+=(-a "$AGENT")
           echo "+ npx skills ${args[*]}"
           npx -y skills@latest "${args[@]}" 2>&1 | tee "$RUNNER_TEMP/install.log"
