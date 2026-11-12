@@ -46,11 +46,14 @@ skill set changes. A recorded observation cannot establish a site's current stat
 {
   "recorded_at": "2026-11-11T12:00:00Z",
   "github": {
-    "pr": {"merged": true, "merged_at": "2026-11-10T12:00:00Z", "merge_commit_sha": "0123456789abcdef0123456789abcdef01234567"},
+    "repository": "owner/repo",
+    "pr": {"number": 2, "merged": true, "merged_at": "2026-11-10T12:00:00Z", "merge_commit_sha": "0123456789abcdef0123456789abcdef01234567"},
     "commit": {"sha": "0123456789abcdef0123456789abcdef01234567"}
   },
   "cloudflare": {
     "type": "pages",
+    "account_id": "existing-account-id",
+    "project_name": "existing-project-name",
     "project": {
       "domains": ["example.com"],
       "canonical_deployment": {
@@ -61,7 +64,7 @@ skill set changes. A recorded observation cannot establish a site's current stat
     }
   },
   "http": [
-    {"url": "https://example.com/", "status": 200, "headers": {"content-type": "text/html"}, "body": "<link rel=\"canonical\" href=\"https://example.com/\">"},
+    {"url": "https://example.com/", "status": 200, "headers": {"content-type": "text/html"}, "body": "<head><link rel=\"canonical\" href=\"https://example.com/\"></head>"},
     {"url": "https://example.com/robots.txt", "status": 200, "headers": {"content-type": "text/plain"}, "body": "User-agent: *\nAllow: /\n"}
   ]
 }
@@ -70,19 +73,21 @@ skill set changes. A recorded observation cannot establish a site's current stat
 Worker evidence instead supplies `deployments` with `created_on` and traffic `versions`
 (`version_id`, `percentage`), plus full `versions` with `id` and `annotations["workers/tag"]`.
 The active deployment is the latest by timestamp. A split rollout is incomplete when the task
-requires a single intended production revision. An explicit `expected_version_id` selects it;
-otherwise an exact Git SHA tag must identify it. Unlinked source versions remain unverified.
+requires a single intended production revision. An explicit `expected_version_id` additionally pins that active version; it does not replace
+source linkage. An exact SHA in `workers/tag` or an exact `workers/message` of
+`GitHub commit <40-hex-SHA>` must correlate the source. Conflicting labels fail. Unlinked
+source versions remain unverified. Every deployment needs a timestamp to establish which is current.
 
 Hostname/HTTP redirect observations use original requested URLs and unfollowed responses.
 Crawl resources follow at most five same-origin redirects, storing `final_url` and a
 `redirects` chain, and validate the final response. A cross-origin redirect remains unverified. Include both `/` and
-`redirect_path` probes for each requested redirect. Header names are case-insensitive. Error
+`redirect_paths` probes for each requested redirect. Header names are case-insensitive. Error
 observations can contain `error` instead of a response. Keep application credentials out.
 
 ## Receipt
 
 The report has `schema_version: 1`, `status`, `provenance`, `observed_at`, `assessed_at`,
-`checks`, and `next_actions`. Check IDs are `github.merge`, `github.revision`,
+`checks`, and `next_actions`. Check IDs include `github.identity`, `github.merge`, `github.revision`, `cloudflare.identity`,
 `cloudflare.production`, `cloudflare.revision`, `cloudflare.domain`, `http.home`,
 `http.robots`, `http.sitemap`, `html.canonical`, `redirect.www`, and `redirect.http` when relevant.
 Each carries `status`, `expected`, `observed`, and `evidence`. Check status is `pass`, `fail`,
@@ -91,3 +96,9 @@ if a prerequisite is pending, then `unverified` if evidence is missing, otherwis
 
 The evidence format retains facts rather than provider credentials. A replay can detect logical
 errors in a release assessment. Live checks are necessary to establish the current site state.
+
+Identity checks bind saved observations to the requested repository, PR, account, and project/script.
+Missing identities remain unverified. Explicit Cloudflare targets also require a hostname mapping.
+The collector currently reads Worker custom domains; zone-based route evidence needs a separate check.
+Canonical HTML checks require an active head link and reject unsupported alternate-version attributes.
+Exit code 1 indicates invalid input; consumers must not reuse an older receipt after that exit.

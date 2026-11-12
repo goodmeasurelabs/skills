@@ -38,9 +38,12 @@ timestamps, status, domains, and commit metadata. The helper does this for its c
 Use `GET /accounts/{account}/workers/scripts/{script}/deployments` to inspect active traffic,
 and `GET /accounts/{account}/workers/scripts/{script}/versions/{id}` for the selected version.
 A Worker can send traffic to multiple versions. A newly uploaded version need not be active.
-Version IDs are not Git commit SHAs. Link the expected active version to the intended clean
-source using the deployment output or an exact source SHA recorded in `workers/tag` metadata.
-Treat missing source linkage as unverified. Tags are source labels, not cryptographic proof.
+Version IDs are not Git commit SHAs. Inspect current custom-domain mappings as well as traffic.
+The helper can read Worker custom domains; zone-based route mappings require separate evidence. Link the expected active version to the intended clean
+source using the deployment output, an exact source SHA in `workers/tag`, or the exact
+`workers/message` value `GitHub commit <40-hex-SHA>` used by Good Measure workflows.
+Disagreeing tag and message labels fail source correlation.
+An explicit expected version ID adds a pin and still requires source linkage. Treat missing source linkage as unverified. Tags are source labels, not cryptographic proof.
 
 Respect the repository's existing Worker configuration, bindings, secrets, and rollout method.
 An existing Pages or Sites project must not be migrated to Workers merely to make checks pass.

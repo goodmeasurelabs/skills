@@ -42,7 +42,8 @@ responses. A canonical HTML tag does not establish a redirect.
 ## Check the result
 
 The bundled Python 3.10+ helper performs read-only checks and returns a structured receipt.
-It can inspect live APIs and HTTP responses, or assess recorded observations.
+Run it for the supported mechanical checks, inspect its receipt, and supplement it with the
+requested application journey. It can inspect live APIs and HTTP responses, or assess recorded observations.
 
 ```sh
 python3 <skill-directory>/scripts/check-launch.py --target target.json --live --out receipt.json

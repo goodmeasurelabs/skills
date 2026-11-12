@@ -18,13 +18,13 @@ def fixture():
                          "www_redirect": True, "http_redirect": True}}
     evidence = {
         "recorded_at": "2026-11-11T12:00:00Z",
-        "github": {"pr": {"state": "closed", "merged": True, "merged_at": "2026-11-11T11:00:00Z", "merge_commit_sha": REVISION}},
+        "github": {"repository": "example/site", "pr": {"number": 7, "state": "closed", "merged": True, "merged_at": "2026-11-11T11:00:00Z", "merge_commit_sha": REVISION}},
         "cloudflare": {"type": "pages", "project": {"domains": ["example.com"], "canonical_deployment": {
-            "id": "production", "environment": "production", "latest_stage": {"status": "success"},
+            "id": "production", "environment": "production", "latest_stage": {"name": "deploy", "status": "success"},
             "deployment_trigger": {"metadata": {"commit_hash": REVISION, "commit_dirty": False}}}}},
         "http": [
             {"url": "https://example.com/", "status": 200, "headers": {"Content-Type": "text/html"},
-             "body": '<!-- <link rel="canonical" href="https://bad.example/"> --><link rel=canonical href="https://example.com/">'},
+             "body": '<head><!-- <link rel="canonical" href="https://bad.example/"> --><link rel=canonical href="https://example.com/"></head>'},
             {"url": "https://example.com/robots.txt", "status": 200, "headers": {"content-type": "text/plain; charset=utf-8"}, "body": "User-agent: *\nAllow: /"},
             {"url": "https://example.com/sitemap.xml", "status": 200, "headers": {"content-type": "application/xml"}, "body": '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/</loc></url></urlset>'}
         ]}
@@ -140,6 +140,78 @@ class LaunchChecks(unittest.TestCase):
         target, evidence = fixture()
         target["canonical_url"] = "https://example.com"
         self.assertEqual(self.check(target, evidence, "http.sitemap")["status"], "pass")
+
+    def test_successful_build_does_not_finish_deployment(self):
+        target, evidence = fixture()
+        evidence["cloudflare"]["project"]["canonical_deployment"]["latest_stage"]["name"] = "build"
+        self.assertEqual(self.check(target, evidence, "cloudflare.production")["status"], "pending")
+
+    def test_provider_error_does_not_validate_stale_success(self):
+        target, evidence = fixture()
+        evidence["cloudflare"]["error"] = "HTTP 403 while refreshing cached deployment"
+        self.assertEqual(self.check(target, evidence, "cloudflare.production")["status"], "unverified")
+        self.assertEqual(self.check(target, evidence, "cloudflare.revision")["status"], "unverified")
+
+    def test_recorded_cross_origin_sitemap_cannot_bypass_live_rules(self):
+        target, evidence = fixture()
+        evidence["http"][2]["final_url"] = "https://other.example/sitemap.xml"
+        self.assertEqual(self.check(target, evidence, "http.sitemap")["status"], "fail")
+
+    def test_canonical_must_be_in_head_and_outside_template(self):
+        target, evidence = fixture()
+        for body in ('<body><link rel=canonical href="https://example.com/"></body>',
+                     '<head><template><link rel=canonical href="https://example.com/"></template></head>'):
+            evidence["http"][0]["body"] = body
+            self.assertEqual(self.check(target, evidence, "html.canonical")["status"], "fail")
+
+    def test_github_recording_must_belong_to_requested_repository(self):
+        target, evidence = fixture()
+        evidence["github"]["repository"] = "someone/else"
+        self.assertEqual(self.check(target, evidence, "github.identity")["status"], "fail")
+
+    def test_worker_exact_message_links_source_but_conflicting_tag_fails(self):
+        target, evidence = fixture()
+        evidence["cloudflare"] = {"type": "workers", "deployments": [{"id": "active", "created_on": "2026-11-11T12:00:00Z", "versions": [
+            {"version_id": "v1", "percentage": 100}]}], "versions": [
+            {"id": "v1", "annotations": {"workers/message": "GitHub commit " + REVISION}}]}
+        self.assertEqual(self.check(target, evidence, "cloudflare.revision")["status"], "pass")
+        evidence["cloudflare"]["versions"][0]["annotations"]["workers/tag"] = "f" * 40
+        self.assertEqual(self.check(target, evidence, "cloudflare.revision")["status"], "fail")
+
+    def test_worker_message_cannot_match_a_substring(self):
+        self.assertIsNone(launch.worker_source({"annotations": {"workers/message": "old GitHub commit " + REVISION}})["sha"])
+
+    def test_canonical_invalid_attributes_and_implicit_head_closure(self):
+        target, evidence = fixture()
+        for body in ('<head><link rel=canonical hreflang=en href="https://example.com/"></head>',
+                     '<head><body><link rel=canonical href="https://example.com/">',
+                     '<head><div><link rel=canonical href="https://example.com/">',
+                     '<head><title><link rel=canonical href="https://example.com/"></title></head>'):
+            evidence["http"][0]["body"] = body
+            self.assertEqual(self.check(target, evidence, "html.canonical")["status"], "fail")
+
+    def test_undated_worker_deployment_does_not_establish_latest(self):
+        target, evidence = fixture()
+        evidence["cloudflare"] = {"type": "workers", "deployments": [{"id": "undated", "versions": [
+            {"version_id": "v1", "percentage": 100}]}]}
+        self.assertEqual(self.check(target, evidence, "cloudflare.production")["status"], "unverified")
+
+    def test_uppercase_git_identity_is_equivalent(self):
+        target, evidence = fixture()
+        target["expected_sha"] = REVISION.upper()
+        self.assertEqual(self.check(target, evidence, "github.revision")["status"], "pass")
+        self.assertEqual(self.check(target, evidence, "cloudflare.revision")["status"], "pass")
+
+    def test_recorded_crawl_redirect_cycle_fails(self):
+        target, evidence = fixture()
+        url = evidence["http"][1]["url"]
+        evidence["http"][1].update(final_url=url, redirects=[{"url": url, "status": 301, "location": url}])
+        self.assertEqual(self.check(target, evidence, "http.robots")["status"], "fail")
+
+    def test_nested_template_canonical_is_inert(self):
+        target, evidence = fixture()
+        evidence["http"][0]["body"] = '<head><template><template></template><link rel=canonical href="https://example.com/"></template></head>'
+        self.assertEqual(self.check(target, evidence, "html.canonical")["status"], "fail")
 
 
 if __name__ == "__main__":

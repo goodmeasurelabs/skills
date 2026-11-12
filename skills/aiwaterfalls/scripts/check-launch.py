@@ -80,11 +80,65 @@ class Canonicals(HTMLParser):
     def __init__(self):
         super().__init__()
         self.urls = []
+        self.in_head = False
+        self.inert_elements = []
 
     def handle_starttag(self, tag, attrs):
+        if self.inert_elements:
+            if tag in {"script", "style", "template", "title", "noscript", "noframes"}:
+                self.inert_elements.append(tag)
+            return
+        if tag == "head":
+            self.in_head = True
+        elif tag not in {"html", "base", "basefont", "bgsound", "link", "meta", "noframes", "script", "style", "template", "title", "noscript"}:
+            self.in_head = False
+        if tag in {"script", "style", "template", "title", "noscript", "noframes"}:
+            self.inert_elements.append(tag)
+            return
         attrs = dict(attrs)
-        if tag == "link" and "canonical" in (attrs.get("rel") or "").lower().split():
+        invalid_attributes = any(key in attrs for key in ("hreflang", "lang", "media", "type"))
+        if self.in_head and tag == "link" and not invalid_attributes and "canonical" in (attrs.get("rel") or "").lower().split():
             self.urls.append(attrs.get("href"))
+
+    def handle_endtag(self, tag):
+        if self.inert_elements:
+            if self.inert_elements[-1] == tag:
+                self.inert_elements.pop()
+            return
+        if tag == "head":
+            self.in_head = False
+
+
+def crawl_chain_valid(item, requested_url):
+    """Replay evidence must obey the same redirect boundaries as the live collector."""
+    current = requested_url
+    origin = urllib.parse.urlsplit(requested_url)[:2]
+    chain = item.get("redirects", [])
+    visited = {current}
+    if not isinstance(chain, list) or len(chain) > 5:
+        return False
+    for hop in chain:
+        if hop.get("url") != current or hop.get("status") not in (301, 302, 303, 307, 308):
+            return False
+        current = urllib.parse.urljoin(current, hop.get("location", ""))
+        if current in visited:
+            return False
+        visited.add(current)
+        destination = urllib.parse.urlsplit(current)
+        if destination[:2] != origin or destination.username or destination.password:
+            return False
+    return item.get("final_url", current) == current
+
+
+def worker_source(version):
+    annotations = version.get("annotations") or {}
+    tag = annotations.get("workers/tag") or ""
+    message = re.fullmatch(r"GitHub commit ([0-9a-fA-F]{40})", annotations.get("workers/message") or "")
+    tag_sha = tag.lower() if SHA.fullmatch(tag) else None
+    message_sha = message.group(1).lower() if message else None
+    return {"tag_sha": tag_sha, "message_sha": message_sha,
+            "sha": tag_sha or message_sha,
+            "conflict": bool(tag_sha and message_sha and tag_sha != message_sha)}
 
 
 def assess(target, evidence, provenance="provided_evidence"):
@@ -100,6 +154,20 @@ def assess(target, evidence, provenance="provided_evidence"):
     github = evidence.get("github", {})
     pr = github.get("pr") or {}
     merged = pr.get("merged") is True and bool(pr.get("merged_at"))
+    if target.get("pr") or target.get("expected_sha"):
+        identity = github.get("repository")
+        pr_url = pr.get("html_url") or ""
+        parsed = urllib.parse.urlsplit(pr_url)
+        if not identity and parsed.netloc == "github.com":
+            identity = "/".join(parsed.path.strip("/").split("/")[:2])
+        identity_status = "unverified"
+        if identity:
+            identity_status = "pass" if identity == target["repository"] else "fail"
+        if target.get("pr") and pr.get("number") != target["pr"]:
+            identity_status = "fail" if pr.get("number") is not None else "unverified"
+        add("github.identity", identity_status, {"repository": target["repository"], "pr": target.get("pr")},
+            {"repository": identity, "pr": pr.get("number")}, ["github.repository", "github.pr.number/html_url"],
+            "Associate the GitHub observations with the requested repository and pull request.")
     if target.get("pr"):
         status = "pass" if merged else "unverified"
         if not merged and pr.get("state") == "open" and pr.get("merged") is False:
@@ -111,9 +179,11 @@ def assess(target, evidence, provenance="provided_evidence"):
             "error": github.get("error")}, [f"github.pr#{target['pr']}"],
             "Wait for the requested PR to merge, or resolve missing GitHub access before publishing.")
     revision = target.get("expected_sha") or (pr.get("merge_commit_sha") if merged else None)
+    revision = revision.lower() if isinstance(revision, str) else None
     if target.get("pr") or target.get("expected_sha"):
         observed_sha = (github.get("commit") or {}).get("sha")
         known_sha = observed_sha or (pr.get("merge_commit_sha") if merged else None)
+        known_sha = known_sha.lower() if isinstance(known_sha, str) else None
         status = "unverified"
         if revision and known_sha:
             status = "pass" if revision == known_sha and SHA.fullmatch(revision) else "fail"
@@ -123,6 +193,16 @@ def assess(target, evidence, provenance="provided_evidence"):
 
     cf = evidence.get("cloudflare") or {}
     provider = (target.get("cloudflare") or {}).get("type") or cf.get("type")
+    requested_cf = target.get("cloudflare")
+    if requested_cf:
+        identity_keys = ("account_id", "project_name" if provider == "pages" else "script_name")
+        observed_identity = {key: cf.get(key) for key in identity_keys}
+        expected_identity = {key: requested_cf.get(key) for key in identity_keys}
+        identity_status = "unverified"
+        if all(observed_identity.values()):
+            identity_status = "pass" if observed_identity == expected_identity else "fail"
+        add("cloudflare.identity", identity_status, expected_identity, observed_identity,
+            ["cloudflare request identity"], "Confirm the Cloudflare account and project/script associated with this recording.")
     if provider == "pages":
         deployment = (cf.get("project") or {}).get("canonical_deployment") or {}
         stage = deployment.get("latest_stage") or {}
@@ -130,53 +210,78 @@ def assess(target, evidence, provenance="provided_evidence"):
         if deployment:
             status = "fail"
             if deployment.get("environment") == "production":
-                status = "pass" if stage.get("status") == "success" else "fail"
-                if stage.get("status") in PENDING:
+                status = "unverified" if not stage.get("name") else "fail"
+                if stage.get("name") == "deploy" and stage.get("status") == "success":
+                    status = "pass"
+                if stage.get("status") in PENDING or (stage.get("name") != "deploy" and stage.get("status") == "success"):
                     status = "pending"
+        if cf.get("error"):
+            status = "unverified"
         add("cloudflare.production", status, "successful canonical production deployment", {
             "id": deployment.get("id"), "environment": deployment.get("environment"),
             "stage": stage, "error": cf.get("error")}, ["cloudflare.project.canonical_deployment"],
             "Inspect or resume the canonical production deployment. Resolve provider access if unavailable.")
         metadata = (deployment.get("deployment_trigger") or {}).get("metadata") or {}
         actual = metadata.get("commit_hash")
+        actual = actual.lower() if isinstance(actual, str) else None
         dirty = metadata.get("commit_dirty")
         status = "unverified"
         if revision and actual:
             status = "fail" if actual != revision or dirty is True else "unverified"
             if actual == revision and dirty is False:
                 status = "pass"
+        if cf.get("error"):
+            status = "unverified"
         add("cloudflare.revision", status, revision or "confirmed intended revision", {
             "commit_hash": actual, "commit_dirty": dirty, "deployment_id": deployment.get("id")},
             ["cloudflare.project.canonical_deployment.deployment_trigger.metadata"],
             "Compare the active deployment with the intended clean source and its build receipt.")
         domains = (cf.get("project") or {}).get("domains")
-        if domains is not None:
+        if domains is not None or requested_cf:
             hostname = urllib.parse.urlsplit(home_url(target)).hostname
-            add("cloudflare.domain", "pass" if hostname in domains else "fail", hostname, domains,
+            status = "unverified" if domains is None or cf.get("error") else "pass" if hostname in domains else "fail"
+            add("cloudflare.domain", status, hostname, domains,
                 ["cloudflare.project.domains"], "Confirm the requested hostname is attached to this project.")
     elif provider == "workers":
         deployments = cf.get("deployments") or []
         active = max(deployments, key=lambda item: item.get("created_on", ""), default={})
         traffic = [item for item in active.get("versions", []) if item.get("percentage", 0) > 0]
-        status = "unverified" if not active or not active.get("created_on") else "fail"
-        if len(traffic) == 1 and traffic[0].get("percentage") == 100:
+        dated = bool(deployments) and all(item.get("created_on") for item in deployments)
+        status = "unverified" if not dated else "fail"
+        if dated and len(traffic) == 1 and traffic[0].get("percentage") == 100:
             status = "pass"
+        if cf.get("error"):
+            status = "unverified"
         add("cloudflare.production", status, "one intended version receiving 100% of traffic", {
             "deployment_id": active.get("id"), "versions": traffic, "error": cf.get("error")},
             ["cloudflare.deployments latest by created_on"],
             "Inspect active Worker traffic and complete the requested rollout if authorized.")
         current_ids = [item.get("version_id") for item in traffic]
         versions = {item.get("id"): item for item in cf.get("versions", [])}
-        tags = [(versions.get(item) or {}).get("annotations", {}).get("workers/tag") for item in current_ids]
+        sources = [worker_source(versions.get(item) or {}) for item in current_ids]
         expected_version = (target.get("cloudflare") or {}).get("expected_version_id")
         status = "unverified"
-        if revision and tags and all(tags):
-            status = "pass" if len(tags) == 1 and tags[0] == revision else "fail"
+        if revision and sources and all(source["sha"] for source in sources):
+            status = "pass" if len(sources) == 1 and sources[0]["sha"] == revision.lower() else "fail"
+        if any(source["conflict"] for source in sources):
+            status = "fail"
         if expected_version and current_ids != [expected_version]:
             status = "fail" if current_ids else "unverified"
+        if cf.get("error"):
+            status = "unverified"
         add("cloudflare.revision", status, {"commit_sha": revision, "version_id": expected_version},
-            {"version_ids": current_ids, "source_tags": tags}, ["cloudflare.versions.annotations.workers/tag"],
+            {"version_ids": current_ids, "source_labels": sources}, ["cloudflare.versions.annotations.workers/tag or exact workers/message"],
             "Link the active Worker version to the requested clean source using the deployment receipt.")
+        if requested_cf:
+            hostname = urllib.parse.urlsplit(home_url(target)).hostname
+            domain = next((item for item in cf.get("domains", []) if item.get("hostname") == hostname), None)
+            status = "unverified"
+            if domain:
+                status = "pass" if domain.get("service") == requested_cf.get("script_name") else "fail"
+            if cf.get("domain_error") or cf.get("error"):
+                status = "unverified"
+            add("cloudflare.domain", status, {"hostname": hostname, "service": requested_cf.get("script_name")},
+                domain, ["cloudflare.domains"], "Verify the hostname's current Worker mapping or inspect its zone route separately.")
 
     responses = {item.get("url"): item for item in evidence.get("http", [])}
 
@@ -192,6 +297,8 @@ def assess(target, evidence, provenance="provided_evidence"):
             status = "pass"
         if item.get("truncated"):
             status = "unverified"
+        if path != "/" and not crawl_chain_valid(item, url):
+            status = "fail"
         add(check_id, status, expectation, {
             "status": item.get("status"), "content_type": headers.get("content-type"),
             "error": item.get("error"), "url": url, "final_url": item.get("final_url"),
@@ -223,7 +330,8 @@ def assess(target, evidence, provenance="provided_evidence"):
         parser.feed(item.get("body", ""))
         expected = canonical_url(target)
         status = "unverified" if not item or item.get("error") else "fail"
-        if not item.get("error") and item.get("status") == 200 and parser.urls == [expected] and "html" in headers.get("content-type", ""):
+        content_type = headers.get("content-type", "").split(";")[0].strip().lower()
+        if not item.get("error") and item.get("status") == 200 and parser.urls == [expected] and content_type in {"text/html", "application/xhtml+xml"}:
             status = "pass"
         if item.get("truncated"):
             status = "unverified"
@@ -343,11 +451,11 @@ def cf_read(path):
 
 def collect(target):
     validate_target(target)
-    evidence = dict(recorded_at=now(), github={}, http=[])
+    evidence = dict(recorded_at=now(), github={"repository": target["repository"]}, http=[])
     github = evidence["github"]
     if target.get("pr"):
         pr = gh_read(f"repos/{target['repository']}/pulls/{target['pr']}")
-        github["pr"] = {key: pr.get(key) for key in ("state", "merged", "merged_at", "merge_commit_sha")}
+        github["pr"] = {key: pr.get(key) for key in ("number", "html_url", "state", "merged", "merged_at", "merge_commit_sha")}
         if pr.get("error"):
             github["error"] = pr["error"]
     if target.get("expected_sha"):
@@ -362,7 +470,8 @@ def collect(target):
             raise ValueError("live Cloudflare checks need account_id and project_name or script_name")
         account = urllib.parse.quote(cf["account_id"], safe="")
         name = urllib.parse.quote(identifier, safe="")
-        evidence["cloudflare"] = {"type": cf["type"]}
+        evidence["cloudflare"] = {"type": cf["type"], "account_id": cf["account_id"],
+                                  "project_name" if cf["type"] == "pages" else "script_name": identifier}
         result = evidence["cloudflare"]
         if cf["type"] == "pages":
             project = cf_read(f"accounts/{account}/pages/projects/{name}")
@@ -382,6 +491,11 @@ def collect(target):
                     version_id = entry["version_id"]
                     version = cf_read(f"accounts/{account}/workers/scripts/{name}/versions/{urllib.parse.quote(version_id, safe='')}")
                     result["versions"].append({"id": version_id, "annotations": version.get("annotations", {})})
+            domains = cf_read(f"accounts/{account}/workers/domains")
+            if isinstance(domains, dict) and domains.get("error"):
+                result["domain_error"] = domains["error"]
+            elif isinstance(domains, list):
+                result["domains"] = [{key: item.get(key) for key in ("hostname", "service", "environment")} for item in domains]
     wanted = target.get("checks", {})
     urls = [home_url(target)]
     urls.extend(urllib.parse.urljoin(home_url(target), path) for key, path in (("robots", "/robots.txt"), ("sitemap", "/sitemap.xml")) if wanted.get(key))
