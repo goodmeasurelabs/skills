@@ -1,0 +1,29 @@
+name: Test AI Waterfalls
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 -B -m unittest discover -s tests -p '*_test.py'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify the installed skill includes its executable resources
+        run: |
+          mkdir -p "$RUNNER_TEMP/aiwaterfalls-install"
+          cd "$RUNNER_TEMP/aiwaterfalls-install"
+          git init -q
+          npx -y skills@latest add "$GITHUB_WORKSPACE" --skill aiwaterfalls -a codex -y
+          cmp .agents/skills/aiwaterfalls/SKILL.md "$GITHUB_WORKSPACE/skills/aiwaterfalls/SKILL.md"
+          cmp .agents/skills/aiwaterfalls/scripts/check-launch.py "$GITHUB_WORKSPACE/skills/aiwaterfalls/scripts/check-launch.py"
+          test -f .agents/skills/aiwaterfalls/references/github-cloudflare.md
+          python3 .agents/skills/aiwaterfalls/scripts/check-launch.py --help
