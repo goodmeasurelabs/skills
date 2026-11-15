@@ -40,4 +40,4 @@ Without the plugin, the user can still play unpaired at https://www.ineedadistra
 
 ## What is sent
 
-Only the word `working`, `waiting` or `idle`, a one-word reason, which agent it is, and a random pairing token made on the user's machine. Never prompts, file paths, code or tool input.
+Only the word `working`, `waiting` or `idle`, a one-word reason, which agent it is, a checksum of the session id (so several agents can be told apart), and a random pairing token made on the user's machine. Never prompts, file paths, code or tool input.
