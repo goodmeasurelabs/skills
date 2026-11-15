@@ -24,6 +24,7 @@ jobs:
             mv "$tmp" "skills/$1/SKILL.md"
           }
           fetch javascriptai https://javascriptai.com/skill.md
+          fetch ineedadistraction https://www.ineedadistraction.com/skill.md
       - name: Commit changes
         run: |
           if git diff --quiet; then echo "No changes."; exit 0; fi
